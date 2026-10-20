@@ -1,0 +1,286 @@
+@import url("https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@400;500;600;700;800&display=swap");
+
+:root {
+  font-family: "DM Sans", sans-serif;
+  color: #f5f5fa;
+  background: #0b0c12;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  font-optical-sizing: auto;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+}
+
+button {
+  font: inherit;
+}
+
+.app {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background:
+    radial-gradient(ellipse at 50% 42%, #202044 0%, transparent 42%),
+    #0b0c12;
+  overflow: hidden;
+}
+
+.topbar {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 27px 7%;
+  border-bottom: 1px solid #ffffff0e;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 21px;
+  font-weight: 800;
+  letter-spacing: -0.8px;
+}
+
+.brand-icon {
+  color: #a99aff;
+  font-size: 28px;
+}
+
+.brand-accent {
+  color: #a99aff;
+}
+
+.top-label,
+.eyebrow {
+  color: #9c9bb6;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 2px;
+}
+
+.hero {
+  width: 100%;
+  max-width: 780px;
+  margin: auto;
+  padding: 55px 24px 65px;
+  display: flex;
+  align-items: center;
+  flex-direction: column;
+  text-align: center;
+}
+
+.eyebrow {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.live-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #a89aff;
+  box-shadow: 0 0 12px #a89aff;
+}
+
+h1 {
+  font-family: "Manrope", sans-serif;
+  font-size: clamp(39px, 6vw, 65px);
+  line-height: 1.12;
+  letter-spacing: -3px;
+  margin: 24px 0 17px;
+  font-weight: 800;
+}
+
+h1 span {
+  color: #aaa0ff;
+}
+
+.subtitle {
+  color: #a4a4b8;
+  max-width: 420px;
+  font-size: 15px;
+  line-height: 1.8;
+  margin: 0;
+}
+
+.voice-orb {
+  width: 190px;
+  height: 190px;
+  margin: 46px 0 30px;
+  display: grid;
+  place-items: center;
+  position: relative;
+}
+
+.orb-ring {
+  position: absolute;
+  border: 1px solid #a79aff24;
+  border-radius: 50%;
+  inset: 0;
+}
+
+.ring-two {
+  inset: 17px;
+  border-color: #a79aff36;
+}
+
+.orb-core {
+  display: grid;
+  place-items: center;
+  width: 112px;
+  height: 112px;
+  border-radius: 50%;
+  color: white;
+  font-size: 44px;
+  background: linear-gradient(145deg, #9d8cff, #5340ad);
+  box-shadow: 0 0 55px #806aff4d, inset 0 1px 10px #ffffff60;
+}
+
+.voice-orb.active .ring-one {
+  animation: pulse 2s ease-out infinite;
+}
+
+.voice-orb.active .ring-two {
+  animation: pulse 2s ease-out infinite 0.6s;
+}
+
+.voice-orb.active .orb-core {
+  animation: glow 1.8s ease-in-out infinite alternate;
+}
+
+@keyframes pulse {
+  0% {
+    transform: scale(0.8);
+    opacity: 0.8;
+  }
+
+  100% {
+    transform: scale(1.35);
+    opacity: 0;
+  }
+}
+
+@keyframes glow {
+  from {
+    box-shadow: 0 0 35px #806aff55;
+  }
+
+  to {
+    box-shadow: 0 0 70px #a99affaa;
+  }
+}
+
+.status {
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.hint {
+  color: #8d8da3;
+  font-size: 13px;
+  margin-top: 9px;
+}
+
+.controls {
+  margin-top: 28px;
+}
+
+.start-button,
+.end-button {
+  border: 0;
+  border-radius: 100px;
+  padding: 16px 30px;
+  min-width: 205px;
+  color: white;
+  font-weight: 700;
+  cursor: pointer;
+  transition: transform 0.2s, opacity 0.2s;
+}
+
+.start-button {
+  background: linear-gradient(100deg, #8c79f6, #6754d5);
+  box-shadow: 0 8px 35px #7461ed30;
+}
+
+.end-button {
+  background: #e35162;
+}
+
+.start-button:hover,
+.end-button:hover {
+  transform: translateY(-2px);
+}
+
+.start-button:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+
+.start-button span,
+.end-button span {
+  margin-right: 9px;
+}
+
+.error {
+  max-width: 440px;
+  color: #ff9da6;
+  font-size: 13px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.privacy {
+  margin-top: 22px;
+  font-size: 11px;
+  color: #73738b;
+}
+
+footer {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 22px 7%;
+  border-top: 1px solid #ffffff0e;
+  color: #73738b;
+  font-size: 11px;
+}
+
+@media (max-width: 520px) {
+  .topbar {
+    padding: 21px 5%;
+  }
+
+  .top-label {
+    font-size: 8px;
+    letter-spacing: 1px;
+  }
+
+  .hero {
+    padding-top: 55px;
+  }
+
+  h1 {
+    letter-spacing: -2px;
+  }
+
+  .voice-orb {
+    margin-top: 38px;
+  }
+
+  footer {
+    padding: 20px 5%;
+    font-size: 10px;
+  }
+}
