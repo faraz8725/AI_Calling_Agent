@@ -93,6 +93,11 @@ app.listen(PORT, () => {
 */
 
 
+
+
+
+
+
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
@@ -109,7 +114,7 @@ app.use(cors({ origin: true }));
 app.use(express.json());
 
 if (!process.env.GEMINI_API_KEY) {
-  console.error("GEMINI_API_KEY .env file mein missing hai.");
+  console.error("GEMINI_API_KEY Render environment mein missing hai.");
   process.exit(1);
 }
 
@@ -119,6 +124,19 @@ const ai = new GoogleGenAI({
 });
 
 const MODEL = "gemini-3.8-live";
+const EXOTEL_RATE = 8000;
+
+// Exotel documentation: minimum outbound audio chunk 3200 bytes.
+// PCM16 mono at 8 kHz = 16000 bytes/second.
+const EXOTEL_CHUNK_BYTES = 3200;
+
+const SYSTEM_INSTRUCTION =
+  "You are a friendly AI voice assistant answering a phone call. " +
+  "Speak naturally and concisely. Understand Hindi, Hinglish and English. " +
+  "Reply in the language the caller prefers. Ask one question at a time. " +
+  "Never claim to be human. Be helpful, respectful and honest. " +
+  "If you do not know something, say so honestly.";
+
 const server = createServer(app);
 
 app.get("/", (req, res) => {
@@ -129,7 +147,7 @@ app.get("/", (req, res) => {
   });
 });
 
-// Existing browser app ka token endpoint
+// Existing browser voice assistant token endpoint
 app.post("/api/token", async (req, res) => {
   try {
     const expireTime = new Date(
@@ -148,13 +166,7 @@ app.post("/api/token", async (req, res) => {
           config: {
             responseModalities: ["AUDIO"],
             systemInstruction: {
-              parts: [{
-                text:
-                  "You are a friendly AI voice assistant. Speak naturally " +
-                  "and concisely. Understand Hindi, Hinglish and English. " +
-                  "Reply in the language the caller prefers. Be helpful, " +
-                  "respectful and honest.",
-              }],
+              parts: [{ text: SYSTEM_INSTRUCTION }],
             },
           },
         },
@@ -165,14 +177,19 @@ app.post("/api/token", async (req, res) => {
       throw new Error("Gemini did not return an ephemeral token.");
     }
 
-    res.json({ token: token.name, expiresAt: expireTime });
+    res.json({
+      token: token.name,
+      expiresAt: expireTime,
+    });
   } catch (error) {
     console.error("Token creation failed:", error.message);
-    res.status(500).json({ error: "Gemini token creation failed." });
+    res.status(500).json({
+      error: "Gemini token creation failed.",
+    });
   }
 });
 
-// Convert PCM16 little-endian bytes to float samples
+// PCM16 little-endian buffer -> Float32 samples
 function pcmToFloat(buffer) {
   const length = Math.floor(buffer.length / 2);
   const samples = new Float32Array(length);
@@ -186,17 +203,23 @@ function pcmToFloat(buffer) {
 
 // Linear sample-rate conversion
 function resample(input, fromRate, toRate) {
-  if (fromRate === toRate || input.length === 0) return input;
+  if (fromRate === toRate || input.length === 0) {
+    return input;
+  }
 
   const outputLength = Math.max(
     1,
-    Math.floor(input.length * toRate / fromRate)
+    Math.floor((input.length * toRate) / fromRate)
   );
+
   const output = new Float32Array(outputLength);
 
   for (let i = 0; i < outputLength; i++) {
-    const position = i * fromRate / toRate;
-    const left = Math.min(Math.floor(position), input.length - 1);
+    const position = (i * fromRate) / toRate;
+    const left = Math.min(
+      Math.floor(position),
+      input.length - 1
+    );
     const right = Math.min(left + 1, input.length - 1);
     const fraction = position - left;
 
@@ -208,14 +231,16 @@ function resample(input, fromRate, toRate) {
   return output;
 }
 
+// Float32 samples -> PCM16 little-endian buffer
 function floatToPcmBuffer(samples) {
   const buffer = Buffer.alloc(samples.length * 2);
 
   for (let i = 0; i < samples.length; i++) {
     const sample = Math.max(-1, Math.min(1, samples[i]));
-    const value = sample < 0
-      ? Math.round(sample * 32768)
-      : Math.round(sample * 32767);
+    const value =
+      sample < 0
+        ? Math.round(sample * 32768)
+        : Math.round(sample * 32767);
 
     buffer.writeInt16LE(value, i * 2);
   }
@@ -223,29 +248,65 @@ function floatToPcmBuffer(samples) {
   return buffer;
 }
 
+function sendExotelEvent(ws, event) {
+  if (ws.readyState !== WebSocket.OPEN) return;
+
+  ws.send(JSON.stringify(event));
+}
+
+// Send only complete, documented-size chunks to Exotel.
 function sendExotelAudio(ws, streamSid, pcmBuffer, state) {
-  // Send small 100 ms chunks: 8000 samples/sec * 0.1 sec * 2 bytes
-  const chunkBytes = 1600;
+  if (!streamSid || ws.readyState !== WebSocket.OPEN) return;
 
-  for (let offset = 0; offset < pcmBuffer.length; offset += chunkBytes) {
-    if (ws.readyState !== WebSocket.OPEN) return;
+  state.audioBuffer = Buffer.concat([
+    state.audioBuffer,
+    pcmBuffer,
+  ]);
 
-    const chunk = pcmBuffer.subarray(
-      offset,
-      Math.min(offset + chunkBytes, pcmBuffer.length)
+  while (state.audioBuffer.length >= EXOTEL_CHUNK_BYTES) {
+    const chunk = state.audioBuffer.subarray(
+      0,
+      EXOTEL_CHUNK_BYTES
     );
 
-    ws.send(JSON.stringify({
+    state.audioBuffer = state.audioBuffer.subarray(
+      EXOTEL_CHUNK_BYTES
+    );
+
+    sendExotelEvent(ws, {
       event: "media",
-      sequence_number: ++state.sequence,
       stream_sid: streamSid,
       media: {
-        chunk: state.chunk++,
-        timestamp: String(Date.now() - state.startedAt),
         payload: chunk.toString("base64"),
       },
-    }));
+    });
   }
+}
+
+// Flush the last partial chunk at the end of a Gemini response.
+// Pad with digital silence so the chunk meets the minimum size.
+function flushExotelAudio(ws, streamSid, state) {
+  if (!state.audioBuffer.length) return;
+
+  if (ws.readyState !== WebSocket.OPEN || !streamSid) {
+    state.audioBuffer = Buffer.alloc(0);
+    return;
+  }
+
+  const remaining = state.audioBuffer;
+  const padded = Buffer.alloc(EXOTEL_CHUNK_BYTES);
+
+  remaining.copy(padded);
+
+  state.audioBuffer = Buffer.alloc(0);
+
+  sendExotelEvent(ws, {
+    event: "media",
+    stream_sid: streamSid,
+    media: {
+      payload: padded.toString("base64"),
+    },
+  });
 }
 
 const voicebotWss = new WebSocketServer({
@@ -259,31 +320,40 @@ voicebotWss.on("connection", (ws) => {
   let session = null;
   let streamSid = null;
   let started = false;
+  let stopped = false;
 
   const state = {
-    sequence: 0,
-    chunk: 0,
-    startedAt: Date.now(),
+    audioBuffer: Buffer.alloc(0),
   };
 
+  async function closeGeminiSession() {
+    const currentSession = session;
+    session = null;
+
+    if (currentSession) {
+      try {
+        await currentSession.close();
+      } catch (error) {
+        console.error(
+          "Gemini session close error:",
+          error.message
+        );
+      }
+    }
+  }
+
   async function startGemini() {
-    if (started) return;
+    if (started || stopped) return;
+
     started = true;
 
     try {
-      session = await ai.live.connect({
+      const newSession = await ai.live.connect({
         model: MODEL,
         config: {
           responseModalities: ["AUDIO"],
           systemInstruction: {
-            parts: [{
-              text:
-                "You are answering an incoming phone call. " +
-                "Be a friendly, concise AI assistant. Understand Hindi, " +
-                "Hinglish and English, and reply in the caller's language. " +
-                "Ask one question at a time. Never claim to be a human. " +
-                "If you do not know an answer, say so honestly.",
-            }],
+            parts: [{ text: SYSTEM_INSTRUCTION }],
           },
         },
         callbacks: {
@@ -292,37 +362,67 @@ voicebotWss.on("connection", (ws) => {
           },
 
           onmessage: (message) => {
+            if (stopped || ws.readyState !== WebSocket.OPEN) {
+              return;
+            }
+
             const content = message.serverContent;
 
             if (content?.interrupted) {
-              if (ws.readyState === WebSocket.OPEN) {
-                ws.send(JSON.stringify({
-                  event: "clear",
-                  stream_sid: streamSid,
-                }));
-              }
+              state.audioBuffer = Buffer.alloc(0);
+
+              sendExotelEvent(ws, {
+                event: "clear",
+                stream_sid: streamSid,
+              });
+
               return;
             }
 
             for (const part of content?.modelTurn?.parts || []) {
               const audioData = part.inlineData?.data;
+
               if (!audioData || !streamSid) continue;
 
-              // Gemini Live audio output is normally PCM16 at 24 kHz.
               const mimeType = part.inlineData.mimeType || "";
               const rateMatch = mimeType.match(/rate=(\d+)/);
+
+              // Gemini Live audio output is normally PCM16 at 24 kHz.
               const outputRate = rateMatch
                 ? Number(rateMatch[1])
                 : 24000;
 
-              const pcmBuffer = Buffer.from(audioData, "base64");
-              const floatSamples = pcmToFloat(pcmBuffer);
+              if (!Number.isFinite(outputRate) || outputRate <= 0) {
+                console.error("Invalid Gemini audio sample rate");
+                continue;
+              }
 
-              // Exotel's default Voicebot media rate is 8 kHz.
-              const samples8k = resample(floatSamples, outputRate, 8000);
+              const pcmBuffer = Buffer.from(audioData, "base64");
+
+              // Avoid passing an incomplete PCM16 sample.
+              const evenLength = pcmBuffer.length - (pcmBuffer.length % 2);
+              const validPcm = pcmBuffer.subarray(0, evenLength);
+
+              const floatSamples = pcmToFloat(validPcm);
+              const samples8k = resample(
+                floatSamples,
+                outputRate,
+                EXOTEL_RATE
+              );
+
               const outputPcm = floatToPcmBuffer(samples8k);
 
-              sendExotelAudio(ws, streamSid, outputPcm, state);
+              sendExotelAudio(
+                ws,
+                streamSid,
+                outputPcm,
+                state
+              );
+            }
+
+            // Finish sending audio when Gemini finishes its response.
+            if (content?.turnComplete) {
+              flushExotelAudio(ws, streamSid, state);
             }
           },
 
@@ -334,26 +434,50 @@ voicebotWss.on("connection", (ws) => {
           },
 
           onclose: (event) => {
-            console.log("Gemini Live session closed", event?.reason || "");
+            console.log(
+              "Gemini Live session closed",
+              event?.reason || ""
+            );
           },
         },
       });
 
-      // Ask Gemini to speak first when the call connects.
+      if (stopped || ws.readyState !== WebSocket.OPEN) {
+        try {
+          await newSession.close();
+        } catch {}
+
+        return;
+      }
+
+      session = newSession;
+
+      console.log("Gemini session ready; sending greeting");
+
       session.sendClientContent({
-        turns: [{
-          role: "user",
-          parts: [{
-            text:
-              "The caller has just connected. Greet them briefly in " +
-              "Hindi/Hinglish and ask how you can help.",
-          }],
-        }],
+        turns: [
+          {
+            role: "user",
+            parts: [
+              {
+                text:
+                  "The caller has just connected. Greet them briefly " +
+                  "in natural Hindi/Hinglish and ask how you can help.",
+              },
+            ],
+          },
+        ],
         turnComplete: true,
       });
     } catch (error) {
-      console.error("Could not start Gemini Live:", error.message);
-      ws.close(1011, "AI session could not start");
+      console.error(
+        "Could not start Gemini Live:",
+        error.message
+      );
+
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.close(1011, "AI session could not start");
+      }
     }
   }
 
@@ -379,42 +503,77 @@ voicebotWss.on("connection", (ws) => {
           message.start?.streamSid ||
           null;
 
-        console.log("Exotel stream started:", streamSid || "SID missing");
+        console.log(
+          "Exotel stream started:",
+          streamSid || "SID missing"
+        );
+
+        if (!streamSid) {
+          console.error("Exotel start event has no stream SID");
+          ws.close(1002, "Missing stream SID");
+          return;
+        }
+
         await startGemini();
         break;
 
       case "media": {
-        if (!session || !message.media?.payload) return;
+        if (stopped || !message.media?.payload) return;
+
+        const currentSession = session;
+
+        if (!currentSession) {
+          // The caller may start speaking while Gemini is connecting.
+          return;
+        }
 
         try {
-          // Exotel default input: base64 PCM16, mono, 8 kHz.
-          const incoming = Buffer.from(message.media.payload, "base64");
-          const samples8k = pcmToFloat(incoming);
+          // Exotel default input: PCM16 mono, 8 kHz.
+          const incoming = Buffer.from(
+            message.media.payload,
+            "base64"
+          );
+
+          const evenLength = incoming.length - (incoming.length % 2);
+          const validIncoming = incoming.subarray(0, evenLength);
+
+          const samples8k = pcmToFloat(validIncoming);
           const samples16k = resample(samples8k, 8000, 16000);
           const pcm16k = floatToPcmBuffer(samples16k);
 
-          session.sendRealtimeInput({
+          currentSession.sendRealtimeInput({
             audio: {
               data: pcm16k.toString("base64"),
               mimeType: "audio/pcm;rate=16000",
             },
           });
         } catch (error) {
-          console.error("Incoming audio processing failed:", error.message);
+          console.error(
+            "Incoming audio processing failed:",
+            error.message
+          );
         }
+
         break;
       }
 
       case "dtmf":
-        console.log("Caller pressed a key");
+        console.log(
+          "Caller pressed a key:",
+          message.dtmf?.digit || "unknown"
+        );
         break;
 
       case "stop":
-        console.log("Exotel call/stream stopped");
-        try {
-          session?.close();
-        } catch {}
-        session = null;
+        console.log(
+          "Exotel call/stream stopped:",
+          message.stop?.reason || ""
+        );
+
+        stopped = true;
+        state.audioBuffer = Buffer.alloc(0);
+
+        await closeGeminiSession();
         break;
 
       default:
@@ -422,14 +581,13 @@ voicebotWss.on("connection", (ws) => {
     }
   });
 
-  ws.on("close", () => {
+  ws.on("close", async () => {
     console.log("Exotel Voicebot WebSocket disconnected");
 
-    try {
-      session?.close();
-    } catch {}
+    stopped = true;
+    state.audioBuffer = Buffer.alloc(0);
 
-    session = null;
+    await closeGeminiSession();
   });
 
   ws.on("error", (error) => {
